@@ -1,0 +1,10 @@
+[
+    "PROTOCOL",
+    "TCP_FLAGS",
+    "L7_PROTO",
+    "IN_BYTES",
+    "OUT_BYTES",
+    "IN_PKTS",
+    "OUT_PKTS",
+    "FLOW_DURATION_MILLISECONDS"
+]
