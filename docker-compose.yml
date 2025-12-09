@@ -1,0 +1,61 @@
+services:
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.5.0
+    platform: linux/amd64
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    ports:
+      - "2181:2181"
+
+  kafka:
+    image: confluentinc/cp-kafka:7.5.0
+    platform: linux/amd64
+    depends_on:
+      - zookeeper
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+    ports:
+      - "9092:9092"
+
+  ids-tower:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    platform: linux/amd64
+    environment:
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+      - KAFKA_FLOW_TOPIC=flows
+      - KAFKA_GROUP_ID=ids-tower
+    depends_on:
+      - kafka
+    ports:
+      - "8000:8000"
+
+  drone-simulator:
+    build:
+      context: .
+      dockerfile: nodes/Dockerfile
+    platform: linux/amd64
+    volumes:
+      - ./data:/app/data:ro
+    environment:
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+      - KAFKA_FLOW_TOPIC=flows
+      - DRONE_IDS=drone-A,drone-B,drone-C
+      - FLOWS_PER_DRONE=0
+      - FLOW_INTERVAL_SEC=1.0
+      - FLOW_JITTER_SEC=0.3
+      - DRONE_STARTUP_DELAY=0.5
+      - DRONE_DATASET_PATH=/app/data/cic_cleaned.csv
+      - DRONE_DATASET_FORMAT=csv
+      - DRONE_DATASET_REPEAT=true
+    depends_on:
+      - kafka

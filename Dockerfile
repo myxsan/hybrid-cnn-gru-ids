@@ -1,5 +1,5 @@
-# Base image with PyTorch + Python already installed (GPU runtime, but works fine on CPU)
-FROM pytorch/pytorch:2.4.0-cuda11.8-cudnn9-runtime
+# Lightweight CPU-only base image
+FROM python:3.11-slim
 
 # Prevent .pyc files and enable unbuffered logs
 ENV PYTHONDONTWRITEBYTECODE=1
@@ -16,7 +16,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Copy only requirements first for better cache
 COPY api/requirements.txt ./requirements.txt
 
-# Install Python deps (torch is already in the base image)
+# Install Python deps (torch pulled via pip)
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy the rest of the project
