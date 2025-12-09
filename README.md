@@ -37,13 +37,15 @@ Environment variables (most already set in `docker-compose.yml`):
 | ids-tower | `KAFKA_FLOW_TOPIC` | Kafka topic to consume flows (`flows`) |
 | ids-tower | `KAFKA_GROUP_ID` | Consumer group id (`ids-tower`) |
 | ids-tower | `TOWER_EVENT_HISTORY` | Max in-memory events kept for dashboard |
-| drone-simulator | `DRONE_IDS` | Comma-separated drone IDs |
+| drone-simulator | `DRONE_IDS` | Comma-separated drone IDs (overrides count) |
+| drone-simulator | `DRONE_COUNT` | Number of auto-generated drones (`DRONE-1..n`, min 2 max 10, default 3) |
 | drone-simulator | `FLOWS_PER_DRONE` | Number of flows per drone (`0` = infinite) |
 | drone-simulator | `FLOW_INTERVAL_SEC` | Average delay between flows |
 | drone-simulator | `FLOW_JITTER_SEC` | +/- jitter applied to intervals |
 | drone-simulator | `DRONE_DATASET_PATH` | Optional CSV/JSONL file for replaying real flows |
 | drone-simulator | `DRONE_DATASET_FORMAT` | `csv` or `jsonl` (default `csv`) |
 | drone-simulator | `DRONE_DATASET_REPEAT` | Loop dataset when `true` |
+| drone-simulator | `DRONE_LABEL_COLUMN` | Column name containing ground-truth labels (default `Label`) |
 
 ## Running the drone producer locally
 
@@ -53,6 +55,7 @@ The drone simulator can be executed outside Docker once Kafka is up:
 python -m nodes.drone_producer \
   --bootstrap-servers localhost:9092 \
   --topic flows \
+  --drone-count 4 \
   --drones drone-A drone-B drone-C \
   --flows-per-drone 10 \
   --interval-sec 0.5 \
@@ -68,6 +71,7 @@ python -m nodes.drone_producer \
   --dataset-path path/to/cic_sample.csv \
   --dataset-format csv \
   --dataset-repeat \
+  --label-column Label \
   --flows-per-drone 0
 ```
 
@@ -84,6 +88,7 @@ That helper simply calls the producer with a short run (5 flows per drone).
 ## Observability
 
 - The dashboard at http://localhost:8000/dashboard now delivers live updates via JavaScript with richer summaries (active drones, attack rate, latency).
+- Accuracy, precision, recall, FAR, and F1 score are computed on the fly whenever flows include a `true_label` (produced automatically when the dataset has the configured label column).
 - `/events` still returns the latest inference events for custom tooling.
 - `/healthz` exposes a lightweight readiness response (Kafka consumer status and buffer depth).
 - `/metrics` exports Prometheus-compatible metrics:

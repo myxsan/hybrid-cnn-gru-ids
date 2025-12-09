@@ -133,7 +133,7 @@ DASHBOARD_TEMPLATE = """
         }}
         .grid {{
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
             gap: 16px;
             margin: 24px 0;
         }}
@@ -152,6 +152,28 @@ DASHBOARD_TEMPLATE = """
             display: block;
             font-size: 1.8rem;
             margin-top: 6px;
+        }}
+        .accuracy-card strong {{
+            font-size: 2.4rem;
+        }}
+        .metric-row {{
+            margin-top: 12px;
+            display: grid;
+            grid-template-columns: repeat(4, minmax(0, 1fr));
+            gap: 12px;
+        }}
+        .metric-row div strong {{
+            font-size: 1.1rem;
+            margin-top: 4px;
+        }}
+        .attack-card .attack-values {{
+            display: flex;
+            justify-content: space-between;
+            gap: 20px;
+            margin-top: 8px;
+        }}
+        .attack-card strong {{
+            font-size: 1.6rem;
         }}
         .table-wrapper {{
             background: var(--panel);
@@ -186,7 +208,7 @@ DASHBOARD_TEMPLATE = """
         .legend {{
             display: flex;
             gap: 12px;
-            margin: 8px 0 16px;
+            margin: 8px 0 4px;
             font-size: 0.85rem;
             color: var(--muted);
         }}
@@ -206,10 +228,18 @@ DASHBOARD_TEMPLATE = """
         .dot.normal {{
             background: var(--benign);
         }}
+        .event-note {{
+            color: var(--muted);
+            font-size: 0.85rem;
+            margin: 0 0 16px;
+        }}
         @media (max-width: 600px) {{
             header {{
                 flex-direction: column;
                 align-items: flex-start;
+            }}
+            .metric-row {{
+                grid-template-columns: repeat(2, minmax(0, 1fr));
             }}
             table {{
                 font-size: 0.85rem;
@@ -227,13 +257,43 @@ DASHBOARD_TEMPLATE = """
     </header>
 
     <div class="grid">
-        <div class="card">
-            <span>Total Events</span>
-            <strong id="stat-total">0</strong>
+        <div class="card accuracy-card">
+            <div class="card-header">
+                <span>Accuracy</span>
+                <small id="metric-samples" style="color: var(--muted); display:block;"></small>
+            </div>
+            <strong id="stat-accuracy">0%</strong>
+            <div class="metric-row">
+                <div>
+                    <span>Precision</span>
+                    <strong id="metric-precision">0%</strong>
+                </div>
+                <div>
+                    <span>Recall</span>
+                    <strong id="metric-recall">0%</strong>
+                </div>
+                <div>
+                    <span>FAR</span>
+                    <strong id="metric-far">0%</strong>
+                </div>
+                <div>
+                    <span>F1 Score</span>
+                    <strong id="metric-f1">0%</strong>
+                </div>
+            </div>
         </div>
-        <div class="card">
-            <span>Attack %</span>
-            <strong id="stat-attack">0%</strong>
+        <div class="card attack-card">
+            <span>Traffic Mix</span>
+            <div class="attack-values">
+                <div>
+                    <span>Benign</span>
+                    <strong id="stat-benign">0%</strong>
+                </div>
+                <div>
+                    <span>Attack</span>
+                    <strong id="stat-attack">0%</strong>
+                </div>
+            </div>
         </div>
         <div class="card">
             <span>Avg Latency</span>
@@ -249,41 +309,41 @@ DASHBOARD_TEMPLATE = """
         <div class="legend">
             <span><span class="dot normal"></span>Normal</span>
             <span><span class="dot attack"></span>Attack</span>
-            <span id="summary-active"></span>
         </div>
+        <p class="event-note" id="summary-active"></p>
         <table>
             <thead>
                 <tr>
                     <th>Drone</th>
-                    <th>Source</th>
                     <th>Flow Timestamp</th>
                     <th>Tower Timestamp</th>
-                    <th>Label</th>
-                    <th>Probabilities</th>
+                    <th>Source</th>
                     <th>Latency</th>
+                    <th>Label</th>
                 </tr>
             </thead>
             <tbody id="events-body">
-                <tr><td colspan="7">Waiting for events…</td></tr>
+                <tr><td colspan="6">Waiting for events…</td></tr>
             </tbody>
         </table>
     </div>
 
     <script>
     const REFRESH_INTERVAL = 4000;
+    const EVENT_LIMIT = 200;
     const eventsBody = document.getElementById("events-body");
     const statusEl = document.getElementById("connection-status");
-    const statTotal = document.getElementById("stat-total");
     const statAttack = document.getElementById("stat-attack");
+    const statBenign = document.getElementById("stat-benign");
     const statLatency = document.getElementById("stat-latency");
     const statUpdated = document.getElementById("stat-updated");
     const summaryActive = document.getElementById("summary-active");
-
-    function formatProbabilities(probabilities) {{
-        return probabilities
-            .map((p, idx) => `P${{idx}}=${{(p * 100).toFixed(1)}}%`)
-            .join(" / ");
-    }}
+    const statAccuracy = document.getElementById("stat-accuracy");
+    const metricPrecision = document.getElementById("metric-precision");
+    const metricRecall = document.getElementById("metric-recall");
+    const metricFar = document.getElementById("metric-far");
+    const metricF1 = document.getElementById("metric-f1");
+    const metricSamples = document.getElementById("metric-samples");
 
     function formatTimestamp(ts) {{
         if (!ts) {{
@@ -293,24 +353,69 @@ DASHBOARD_TEMPLATE = """
         return date.toLocaleString();
     }}
 
+    function percent(part, whole) {{
+        if (!whole) return "0%";
+        return `${{((part / whole) * 100).toFixed(1)}}%`;
+    }}
+
     function updateStats(events) {{
         const total = events.length;
         const attackCount = events.filter(ev => ev.prediction.class_label === "attack").length;
+        const benignCount = total - attackCount;
         const avgLatency = total
             ? (events.reduce((acc, ev) => acc + ev.inference_latency_sec, 0) / total) * 1000
             : 0;
         const drones = new Set(events.map(ev => ev.drone_id));
 
-        statTotal.textContent = total.toString();
-        statAttack.textContent = total ? `${{((attackCount / total) * 100).toFixed(1)}}%` : "0%";
+        statAttack.textContent = percent(attackCount, total);
+        statBenign.textContent = percent(benignCount, total);
         statLatency.textContent = `${{avgLatency.toFixed(1)}} ms`;
         statUpdated.textContent = new Date().toLocaleTimeString();
-        summaryActive.textContent = `${{drones.size}} active drones`;
+        summaryActive.textContent = `${{drones.size}} active drones • Showing up to ${{EVENT_LIMIT}} recent events`;
+    }}
+
+    function normalizeTruth(label) {{
+        if (!label) return null;
+        const lower = label.toLowerCase();
+        return lower.startsWith("attack") ? "attack" : "normal";
+    }}
+
+    function updateMetrics(events) {{
+        const labeled = events.filter(ev => ev.true_label);
+        if (!labeled.length) {{
+            metricSamples.textContent = "Awaiting labeled flows";
+            statAccuracy.textContent = "–";
+            metricPrecision.textContent = metricRecall.textContent = metricFar.textContent = metricF1.textContent = "–";
+            return;
+        }}
+        metricSamples.textContent = `Based on ${{labeled.length}} labeled events`;
+
+        let tp = 0, tn = 0, fp = 0, fn = 0;
+        labeled.forEach(ev => {{
+            const truth = normalizeTruth(ev.true_label);
+            const pred = ev.prediction.class_label;
+            if (truth === "attack" && pred === "attack") tp += 1;
+            else if (truth === "attack" && pred !== "attack") fn += 1;
+            else if (truth !== "attack" && pred === "attack") fp += 1;
+            else tn += 1;
+        }});
+
+        const accuracy = (tp + tn) / (tp + tn + fp + fn || 1);
+        const precision = tp / (tp + fp || 1);
+        const recall = tp / (tp + fn || 1);
+        const far = fp / (fp + tn || 1);
+        const f1 = (precision + recall) ? (2 * precision * recall) / (precision + recall) : 0;
+
+        statAccuracy.textContent = `${{(accuracy * 100).toFixed(1)}}%`;
+        metricPrecision.textContent = `${{(precision * 100).toFixed(1)}}%`;
+        metricRecall.textContent = `${{(recall * 100).toFixed(1)}}%`;
+        metricFar.textContent = `${{(far * 100).toFixed(1)}}%`;
+        metricF1.textContent = `${{(f1 * 100).toFixed(1)}}%`;
     }}
 
     function renderEvents(events) {{
         if (!events.length) {{
-            eventsBody.innerHTML = "<tr><td colspan='7'>No events in window.</td></tr>";
+            eventsBody.innerHTML = "<tr><td colspan='6'>No events in window.</td></tr>";
             return;
         }}
         eventsBody.innerHTML = events
@@ -319,12 +424,11 @@ DASHBOARD_TEMPLATE = """
                 return `
                 <tr class="${{label}}">
                     <td>${{ev.drone_id}}</td>
-                    <td>${{ev.source}}</td>
                     <td>${{formatTimestamp(ev.flow_timestamp)}}</td>
                     <td>${{formatTimestamp(ev.tower_timestamp)}}</td>
-                    <td>${{label}}</td>
-                    <td>${{formatProbabilities(ev.prediction.probabilities)}}</td>
+                    <td>${{ev.source}}</td>
                     <td>${{(ev.inference_latency_sec * 1000).toFixed(2)}} ms</td>
+                    <td>${{label}}</td>
                 </tr>`;
             }})
             .join("");
@@ -332,13 +436,14 @@ DASHBOARD_TEMPLATE = """
 
     async function refresh() {{
         try {{
-            const response = await fetch("/events?limit=200");
+            const response = await fetch(`/events?limit=${{EVENT_LIMIT}}`);
             if (!response.ok) throw new Error("Request failed");
             const payload = await response.json();
             const events = payload.events || [];
             statusEl.textContent = "Streaming";
             statusEl.style.color = "var(--accent)";
             updateStats(events);
+            updateMetrics(events);
             renderEvents(events);
         }} catch (err) {{
             statusEl.textContent = "Disconnected";
@@ -360,6 +465,7 @@ class FlowFeatures(BaseModel):
     drone_id: str
     timestamp: Optional[float] = None
     features: Dict[str, float]
+    true_label: Optional[str] = None
 
 
 class BatchFlowFeatures(BaseModel):
@@ -373,6 +479,7 @@ def _record_event(
     latency: float,
     source: str,
     client_timestamp: Optional[float],
+    true_label: Optional[str],
 ) -> Dict:
     """
     Normalize prediction output, store it in the events deque, and return
@@ -386,6 +493,7 @@ def _record_event(
         "flow_timestamp": client_timestamp,
         "tower_timestamp": tower_timestamp,
         "inference_latency_sec": latency,
+        "true_label": true_label,
         "prediction": {
             "class_id": pred_class,
             "class_label": LABEL_MAP.get(pred_class, "unknown"),
@@ -411,6 +519,7 @@ async def process_flow_message(payload: Dict, source: str = "kafka") -> None:
     features = payload.get("features")
     drone_id = payload.get("drone_id", "unknown-drone")
     client_ts = payload.get("timestamp")
+    true_label = payload.get("true_label")
 
     if not isinstance(features, dict):
         logger.warning("Skipping payload with missing features for drone %s", drone_id)
@@ -430,6 +539,7 @@ async def process_flow_message(payload: Dict, source: str = "kafka") -> None:
         latency=latency,
         source=source,
         client_timestamp=client_ts,
+        true_label=true_label,
     )
     logger.info(
         "Flow processed source=%s drone=%s label=%s latency=%.4fs",
@@ -540,6 +650,7 @@ def predict(flow: FlowFeatures):
         latency=latency,
         source="http",
         client_timestamp=flow.timestamp,
+        true_label=flow.true_label,
     )
     return event
 
@@ -564,6 +675,7 @@ def predict_batch(batch: BatchFlowFeatures):
                 latency=latency,
                 source="http-batch",
                 client_timestamp=flow.timestamp,
+                true_label=flow.true_label,
             )
         )
 

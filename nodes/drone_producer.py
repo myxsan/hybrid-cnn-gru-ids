@@ -25,15 +25,13 @@ with ARTIFACT_FEATURES.open() as f:
     FEATURE_NAMES: Sequence[str] = json.load(f)
 
 
-def _default_drones() -> List[str]:
-    env_value = os.getenv("DRONE_IDS")
-    if env_value:
-        return [item.strip() for item in env_value.split(",") if item.strip()]
-    return ["drone-A", "drone-B"]
-
-
 def env_or_default(name: str, default: str) -> str:
     return os.getenv(name, default)
+
+
+def generate_drone_ids(count: int) -> List[str]:
+    count = max(2, min(10, count))
+    return [f"DRONE-{idx}" for idx in range(1, count + 1)]
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
@@ -51,8 +49,13 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--drones",
         nargs="+",
-        default=_default_drones(),
-        help="Drone IDs to simulate.",
+        help="Drone IDs to simulate (overrides --drone-count).",
+    )
+    parser.add_argument(
+        "--drone-count",
+        type=int,
+        default=int(env_or_default("DRONE_COUNT", "3")),
+        help="Number of drones to auto-generate (2-10).",
     )
     parser.add_argument(
         "--flows-per-drone",
@@ -97,6 +100,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="Replay the dataset in a loop instead of stopping at EOF.",
     )
     parser.add_argument(
+        "--label-column",
+        type=str,
+        default=env_or_default("DRONE_LABEL_COLUMN", "Label"),
+        help="Column name carrying the ground-truth label (optional).",
+    )
+    parser.add_argument(
         "--connect-retry-sec",
         type=float,
         default=float(env_or_default("KAFKA_CONNECT_RETRY_SEC", "5.0")),
@@ -117,6 +126,25 @@ def generate_random_flow() -> dict:
     Values are sampled uniformly in [0,1] per feature.
     """
     return {name: random.random() for name in FEATURE_NAMES}
+
+
+def normalize_label(raw_value: Optional[str]) -> Optional[str]:
+    if raw_value is None:
+        return None
+    value = str(raw_value).strip()
+    if not value:
+        return None
+    lower = value.lower()
+    normal_tokens = {"benign", "normal", "benign traffic", "0"}
+    attack_tokens = {"1", "attack", "malicious", "anomaly"}
+    if lower in normal_tokens:
+        return "normal"
+    if lower in attack_tokens:
+        return "attack"
+    try:
+        return "attack" if float(value) >= 0.5 else "normal"
+    except ValueError:
+        return "attack"
 
 
 def _normalize_feature_row(row: dict) -> dict:
@@ -140,6 +168,7 @@ def dataset_flow_generator(
     path: Path,
     fmt: str,
     repeat: bool,
+    label_column: Optional[str],
 ) -> Iterator[dict]:
     """
     Yield flows from a dataset file. Supports CSV (wide format) or JSON Lines.
@@ -152,7 +181,13 @@ def dataset_flow_generator(
                     if not row:
                         continue
                     try:
-                        yield _normalize_feature_row(row)
+                        label = None
+                        if label_column and label_column in row:
+                            label = normalize_label(row[label_column])
+                        yield {
+                            "features": _normalize_feature_row(row),
+                            "true_label": label,
+                        }
                     except ValueError as exc:
                         logger.warning("Skipping CSV row: %s", exc)
         else:
@@ -163,7 +198,13 @@ def dataset_flow_generator(
                         continue
                     try:
                         record = json.loads(line)
-                        yield _normalize_feature_row(record)
+                        label = None
+                        if label_column and isinstance(record, dict):
+                            label = normalize_label(record.get(label_column))
+                        yield {
+                            "features": _normalize_feature_row(record),
+                            "true_label": label,
+                        }
                     except (json.JSONDecodeError, ValueError) as exc:
                         logger.warning("Skipping JSON line: %s", exc)
         if not repeat:
@@ -189,17 +230,21 @@ async def _drone_loop(
     while flows <= 0 or sent < flows:
         if dataset_iter is not None:
             try:
-                features = next(dataset_iter)
+                sample = next(dataset_iter)
             except StopIteration:
                 logger.info("[%s] Dataset finished, stopping producer loop.", drone_id)
                 break
+            features = sample["features"]
+            true_label = sample.get("true_label")
         else:
             features = generate_random_flow()
+            true_label = None
 
         payload = {
             "drone_id": drone_id,
             "timestamp": time.time(),
             "features": features,
+            "true_label": true_label,
         }
         try:
             await producer.send_and_wait(topic, payload)
@@ -258,7 +303,7 @@ async def _start_producer_with_retry(
 
 async def run_simulation(
     *,
-    drone_ids: Iterable[str],
+    drone_ids: Optional[Iterable[str]],
     bootstrap_servers: str,
     topic: str = "flows",
     flows_per_drone: int = 0,
@@ -270,7 +315,11 @@ async def run_simulation(
     dataset_path: Optional[str] = None,
     dataset_format: str = "csv",
     dataset_repeat: bool = False,
+    label_column: Optional[str] = None,
+    drone_count: int = 3,
 ) -> None:
+    selected_drones = list(drone_ids) if drone_ids else generate_drone_ids(drone_count)
+
     producer = await _start_producer_with_retry(
         bootstrap_servers=bootstrap_servers,
         serializer=lambda value: json.dumps(value).encode("utf-8"),
@@ -292,12 +341,13 @@ async def run_simulation(
             path=resolved,
             fmt=dataset_format,
             repeat=dataset_repeat,
+            label_column=label_column,
         )
     logger.info(
         "Started drone producer bootstrap=%s topic=%s drones=%s",
         bootstrap_servers,
         topic,
-        list(drone_ids),
+        selected_drones,
     )
     try:
         tasks = [
@@ -313,7 +363,7 @@ async def run_simulation(
                     dataset_iterator_factory=dataset_factory,
                 )
             )
-            for idx, drone_id in enumerate(drone_ids)
+            for idx, drone_id in enumerate(selected_drones)
         ]
         await asyncio.gather(*tasks)
     finally:
@@ -324,10 +374,14 @@ async def run_simulation(
 def main():
     parser = build_arg_parser()
     args = parser.parse_args()
+    if args.drones:
+        drone_ids = args.drones
+    else:
+        drone_ids = generate_drone_ids(args.drone_count)
     try:
         asyncio.run(
             run_simulation(
-                drone_ids=args.drones,
+                drone_ids=drone_ids,
                 bootstrap_servers=args.bootstrap_servers,
                 topic=args.topic,
                 flows_per_drone=args.flows_per_drone,
@@ -339,6 +393,8 @@ def main():
                 dataset_path=args.dataset_path or None,
                 dataset_format=args.dataset_format,
                 dataset_repeat=args.dataset_repeat,
+                label_column=args.label_column or None,
+                drone_count=args.drone_count,
             )
         )
     except KeyboardInterrupt:

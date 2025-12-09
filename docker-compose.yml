@@ -49,13 +49,14 @@ services:
     environment:
       - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
       - KAFKA_FLOW_TOPIC=flows
-      - DRONE_IDS=drone-A,drone-B,drone-C
+      - DRONE_COUNT=3
       - FLOWS_PER_DRONE=0
       - FLOW_INTERVAL_SEC=1.0
       - FLOW_JITTER_SEC=0.3
       - DRONE_STARTUP_DELAY=0.5
-      - DRONE_DATASET_PATH=/app/data/cic_cleaned.csv
+      - DRONE_DATASET_PATH=/app/data/CIC_cleaned.csv
       - DRONE_DATASET_FORMAT=csv
       - DRONE_DATASET_REPEAT=true
+      - DRONE_LABEL_COLUMN=Label
     depends_on:
       - kafka
